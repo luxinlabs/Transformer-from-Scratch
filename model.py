@@ -98,17 +98,24 @@ class MultiHeadAttentionBlock(nn.Module):
 
     @staticmethod
     def attention(query, key, value, mask, dropout: nn.Dropout):
+        """
+        Compute the attention scores and apply them to the values.
+        """
         d_k = query.shape[-1]
 
+        # (Batch, h, seq_len, d_k)  -->  (Batch, h, seq_len, seq_len)
         attention_scores = (query @ key.transpose(-2, -1)) / math.sqrt(d_k)
         if mask is not None:
             attention_scores.masked_fill_(mask == 0, -1e9)
-        attention_scores = torch.softmax(attention_scores, dim=-1)
+        attention_scores = attention_scores.softmax(dim=-1) # (Batch, h, seq_len, seq_len)
         if dropout is not None:
             attention_scores = dropout(attention_scores)
-        return torch.matmul(attention_scores, value), attention_scores
+        return (attention_scores @ value), attention_scores
     
     def forward(self, q, k, v, mask):
+        """
+        Compute the multi-head attention.
+        """
         query = self.w_q(q) # (Batch, seq_len, d_model) -> (Batch, seq_len, d_model)
         key = self.w_k(k) # (Batch, seq_len, d_model) -> (Batch, seq_len, d_model)
         value = self.w_v(v) # (Batch, seq_len, d_model) -> (Batch, seq_len, d_model)
@@ -120,3 +127,91 @@ class MultiHeadAttentionBlock(nn.Module):
         value = value.view(value.shape[0], value.shape[1], self.h, self.d_k).transpose(1, 2)
 
         x, self.attention_scores = MultiHeadAttentionBlock.attention(query, key, value, mask, self.dropout)
+
+        # (Batch, h, seq_len, d_k) ->transpose-> (Batch, seq_len, h, d_k) ->view-> (Batch, seq_len, d_model)
+        x = x.transpose(1, 2).contiguous().view(x.shape[0], -1, self.h * self.d_k)
+        
+        # Apply the output matrix (Batch, seq_len, d_model) -> (Batch, seq_len, d_model)
+        return self.w_o(x)
+
+
+class ResidualConnection(nn.Module):
+    """
+    A residual connection followed by a layer norm.
+    """
+    def __init__(self, dropout: float):
+        super().__init__()
+        self.dropout = nn.Dropout(dropout)
+        self.norm = nn.LayerNorm()
+    
+    def forward(self, x, sublayer):
+        return x + self.dropout(sublayer(self.norm(x)))
+
+class EncoderBlock(nn.Module):
+    """
+    A single encoder block in the transformer.
+    """
+    def __init__(self, self_attention_block: MultiHeadAttentionBlock, feed_forward_block: FeedForwardBlock, dropout: float):
+        super().__init__()
+        self.self_attention_block = self_attention_block
+        self.feed_forward_block = feed_forward_block
+        self.residual_connection = nn.ModuleList([ResidualConnection(dropout) for _ in range(2)])
+    
+    def forward(self, x, src_mask):
+        x = self.residual_connection[0](x, lambda x: self.self_attention_block(x, x, x, src_mask))
+        x = self.residual_connection[1](x, lambda x: self.feed_forward_block(x))
+        return x
+
+
+class Encoder(nn.Module):
+    """
+    The entire encoder stack.
+    """
+    def __init__(self, layers: nn.ModuleList):
+        super().__init__()
+        self.layers = layers
+        self.norm = nn.LayerNorm()
+    
+    def forward(self, x, mask):
+        # N layers
+        for layer in self.layers:
+            x = layer(x, mask)
+        return self.norm(x)
+
+
+class DecoderBlock(nn.Module):
+    """
+    A single decoder block in the transformer.
+    """
+    def __init__(self, self_attention_block: MultiHeadAttentionBlock, cross_attention_block: MultiHeadAttentionBlock, feed_forward_block: FeedForwardBlock, dropout: float):
+        super().__init__()
+        self.self_attention_block = self_attention_block
+        self.cross_attention_block = cross_attention_block
+        self.feed_forward_block = feed_forward_block
+        self.residual_connection = nn.Module([ResidualConnection(dropout) for _ in range(3)])
+    
+    def forward(self, x, encoder_output, src_mask, tgt_mask):
+        """
+        source: (batch, seq_len, d_model), encoder output
+        target: (batch, seq_len, d_model), decoder input
+        """
+        x = self.residual_connection[0](x, lambda x: self.self_attention_block(x, x, x, tgt_mask))
+        x = self.residual_connection[1](x, lambda x: self.cross_attention_block(x, encoder_output, encoder_output, src_mask))
+        x = self.residual_connection[2](x, lambda x: self.feed_forward_block(x))
+        return x
+
+
+class Decoder(nn.Module):
+    """
+    The entire decoder stack.
+    """
+    def __init__(self, layers: nn.ModuleList):
+        super().__init__()
+        self.layers = layers
+        self.norm = nn.LayerNormalization()
+    
+    def forward(self, x, encoder_output, src_mask, tgt_mask):
+        # N layers
+        for layer in self.layers:
+            x = layer(x, encoder_output, src_mask, tgt_mask)
+        return self.norm(x)
