@@ -1,5 +1,6 @@
 # IDE
-.vscode/
+.vscode/*
+!.vscode/settings.json
 .idea/
 *.swp
 *.swo
@@ -10,6 +11,7 @@ __pycache__/
 *.py[cod]
 *$py.class
 *.so
+.env
 .Python
 env/
 venv/
