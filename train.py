@@ -22,7 +22,7 @@ from dotenv import load_dotenv
 # Load environment variables from .env file
 load_dotenv()
 
-def gready_decode(model, source, source_mask, tokenizer_src, tokenizer_tgt, max_len, device):
+def greedy_decode(model, source, source_mask, tokenizer_src, tokenizer_tgt, max_len, device):
     sos_idx = tokenizer_tgt.token_to_id("[SOS]")
     eos_idx = tokenizer_tgt.token_to_id("[EOS]")
 
@@ -38,7 +38,7 @@ def gready_decode(model, source, source_mask, tokenizer_src, tokenizer_tgt, max_
         decoder_mask = causal_mask(decoder_input.size(1)).type_as(source_mask).to(device)
 
         # Calculate the output of decoder
-        out = model.decode(encoder_output, source_mask, decoder_input, decoder_mask)
+        out = model.decode(decoder_input, encoder_output, source_mask, decoder_mask)
 
         # Get the next token
         prob = model.project(out[:, -1])
@@ -222,13 +222,14 @@ def train_model(config):
             # Update the weights
             optimizer.step()
             optimizer.zero_grad()
-
-            run_validation(model, val_dataloader, tokenizer_src, tokenizer_tgt, config['seq_len'], device, lambda msg: batch_iterator.write(msg), global_step, writer)
             global_step += 1
             
             # Log the loss
             writer.add_scalar('train_loss', loss.item(), global_step)
             writer.flush()
+        
+        # Run validation at the end of the epoch
+        run_validation(model, val_dataloader, tokenizer_src, tokenizer_tgt, config['seq_len'], device, lambda msg: batch_iter.write(msg), global_step, writer)
             
         # Save the model at the end of every epoch
         model_filename = get_weights_file_path(config, f"{epoch:02d}")
