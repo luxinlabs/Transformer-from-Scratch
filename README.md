@@ -24,9 +24,40 @@ pip install -r requirements.txt
 ├── model.py          # Transformer architecture implementation
 ├── dataset.py        # Bilingual dataset and data loading
 ├── train.py          # Training loop and validation
+├── chat.py           # Interactive translation against a checkpoint
+├── plot_losses.py    # Train/val loss curve from the TensorBoard logs
 ├── config.py         # Configuration parameters
 └── requirements.txt  # Python dependencies
 ```
+
+## Testing a Trained Model
+
+```bash
+python chat.py                                   # uses weights/tmodel_best.pt
+python chat.py --checkpoint weights/tmodel_49.pt # any other checkpoint
+echo "The book is on the table." | python chat.py
+```
+
+```
+en -> it | weights/tmodel_best.pt (epoch 7, val_loss 4.183) | mps
+> The book is on the table.
+Il libro è al tavolo .
+```
+
+## Plotting the Loss Curves
+
+```bash
+python plot_losses.py        # writes loss_curve.png and loss_curve_dark.png
+```
+
+![Training vs validation loss](loss_curve.png)
+
+Validation loss bottoms out at epoch 7 and rises for the remaining 43 epochs
+while training loss keeps falling — the model stops generalizing and starts
+memorizing. `weights/tmodel_best.pt` is the epoch at the turn.
+
+The script also prints a per-epoch table, so the numbers are available without
+the chart.
 
 ## Configuration
 
@@ -39,6 +70,7 @@ Edit `config.py` to adjust hyperparameters:
 - `d_model`: Model dimension (default: 256)
 - `lang_src`: Source language (default: 'en')
 - `lang_tgt`: Target language (default: 'it')
+- `seed`: Seeds the train/val split so it is stable across runs (default: 42)
 
 ## How to Run
 

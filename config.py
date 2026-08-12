@@ -22,6 +22,9 @@ def get_config():
         # batch means 8x fewer updates per epoch, so the old 1e-4 would now
         # underfit. There is no warmup here, so avoid going much above this.
         'lr': 3e-4,
+        # Fixes the train/val split so it is identical across runs, resumes and
+        # later evaluation. Changing it reshuffles which sentences are held out.
+        'seed': 42,
         'seq_len': 128,
         'd_model': 256,
         'lang_src': 'en',

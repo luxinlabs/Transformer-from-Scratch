@@ -177,7 +177,12 @@ def get_ds(config, device):
     # Keep 90% of the data for training and 10% for validation
     train_ds_size = int(len(ds_raw) * 0.9)
     val_ds_size = len(ds_raw) - train_ds_size
-    train_ds_raw, val_ds_raw = random_split(ds_raw, [train_ds_size, val_ds_size])
+    # Seed the split. Without a generator every process draws a different one,
+    # which silently leaks validation data into training when a run is resumed
+    # via 'preload', and makes a checkpoint impossible to evaluate afterwards
+    # because the set it was held out from cannot be reconstructed.
+    split_generator = torch.Generator().manual_seed(config['seed'])
+    train_ds_raw, val_ds_raw = random_split(ds_raw, [train_ds_size, val_ds_size], generator=split_generator)
 
     train_ds = BilingualDataset(train_ds_raw, tokenizer_src, tokenizer_tgt, config['lang_src'], config['lang_tgt'], config['seq_len'])
     val_ds = BilingualDataset(val_ds_raw, tokenizer_src, tokenizer_tgt, config['lang_src'], config['lang_tgt'], config['seq_len'])
