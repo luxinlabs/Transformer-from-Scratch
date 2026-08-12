@@ -33,7 +33,7 @@ pip install -r requirements.txt
 Edit `config.py` to adjust hyperparameters:
 
 - `batch_size`: Number of samples per batch (default: 32, tuned for GPU)
-- `num_epochs`: Number of training epochs (default: 5)
+- `num_epochs`: Number of training epochs (default: 50, ~3.1h on Apple silicon)
 - `lr`: Learning rate (default: 3e-4, scaled to match `batch_size`)
 - `seq_len`: Maximum sequence length (default: 128)
 - `d_model`: Model dimension (default: 256)
@@ -96,7 +96,21 @@ The training script will:
 Model weights are saved after each epoch:
 
 - Location: `weights/tmodel_00.pt`, `weights/tmodel_01.pt`, etc.
-- Contains: model state, optimizer state, epoch number, global step
+- Contains: model state, optimizer state, epoch number, global step, val loss
+- Each checkpoint is ~416MB (the Adam moment buffers are twice the model), so
+  a 50-epoch run writes ~21GB
+
+**Use `weights/tmodel_best.pt`**, which is rewritten whenever validation loss
+improves. This model has 34.6M parameters and only 29k training pairs, so it
+overfits well before the last epoch — the final checkpoint is usually *not* the
+best one, and training loss will keep falling past the point where translation
+quality starts degrading.
+
+The end of the run prints where the optimum landed:
+
+```
+Best validation loss: 4.312 at epoch 21 -> weights/tmodel_best.pt
+```
 
 ## Monitoring Training
 
@@ -108,8 +122,13 @@ tensorboard --logdir=runs
 
 Metrics logged:
 
-- Training loss per batch
+- `train_loss` — training loss per batch
+- `val_loss` — validation loss per epoch, unsmoothed
 - Validation examples with source, target, and predicted translations
+
+Watch the two curves together. While both fall, the model is still learning.
+When `val_loss` turns upward while `train_loss` keeps dropping, it has started
+memorizing the training set and the useful part of the run is over.
 
 ## Environment Variables
 

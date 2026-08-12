@@ -10,7 +10,14 @@ def get_config():
         # Not the bottleneck: throughput is identical for 0/2/4/8 workers because
         # the step is GPU-bound. 2 is enough to hide tokenization. 0 to debug.
         'num_workers': 2,
-        'num_epochs': 5,
+        # 910 steps/epoch at batch 32, so 50 epochs is ~45k optimizer steps
+        # (~3.1h, and ~21GB of per-epoch checkpoints). This is a 34.6M-param
+        # model against only 29k training pairs, so it will overfit long before
+        # epoch 50 -- the extra epochs are insurance that the optimum falls
+        # inside the run, not extra quality. Which is why val_loss is tracked
+        # and the best epoch is saved separately as tmodel_best.pt; the LAST
+        # checkpoint is very unlikely to be the one you want.
+        'num_epochs': 50,
         # Scaled with batch_size (sqrt rule: 1e-4 * sqrt(32/4) ~= 2.8e-4). A bigger
         # batch means 8x fewer updates per epoch, so the old 1e-4 would now
         # underfit. There is no warmup here, so avoid going much above this.

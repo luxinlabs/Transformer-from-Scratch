@@ -109,6 +109,37 @@ def run_validation(model, validation_ds, tokenizer_src, tokenizer_tgt, max_len, 
         pass
 
 
+def compute_validation_loss(model, dataloader, loss_fn, vocab_size, device):
+    """
+    Average per-sample cross entropy over the validation set.
+
+    This is the only signal that says when to stop: train loss keeps falling
+    straight through the point where the model starts overfitting, so it cannot
+    be used to choose a checkpoint.
+    """
+    model.eval()
+    total_loss = 0.0
+    total_samples = 0
+
+    with torch.no_grad():
+        for batch in dataloader:
+            encoder_input = batch['encoder_input'].to(device)
+            decoder_input = batch['decoder_input'].to(device)
+            encoder_mask = batch['encoder_mask'].to(device)
+            decoder_mask = batch['decoder_mask'].to(device)
+            label = batch['label'].to(device)
+
+            proj_output = model.project(model.decode(decoder_input, model.encode(encoder_input, encoder_mask), encoder_mask, decoder_mask))
+            loss = loss_fn(proj_output.reshape(-1, vocab_size), label.reshape(-1))
+
+            batch_size = label.size(0)
+            total_loss += loss.item() * batch_size
+            total_samples += batch_size
+
+    model.train()
+    return total_loss / max(total_samples, 1)
+
+
 def get_all_sentences(ds, lang):
     """
     Get all sentences from the dataset for a given language.
@@ -173,9 +204,12 @@ def get_ds(config, device):
     }
 
     train_dataloader = DataLoader(train_ds, batch_size=config['batch_size'], shuffle=True, **loader_kwargs)
+    # batch_size 1: greedy_decode only handles one sentence at a time
     val_dataloader = DataLoader(val_ds, batch_size=1, shuffle=True, **loader_kwargs)
+    # Separate batched loader for scoring val loss, which needs no decoding
+    val_loss_dataloader = DataLoader(val_ds, batch_size=config['batch_size'], shuffle=False, **loader_kwargs)
 
-    return train_dataloader, val_dataloader, tokenizer_src, tokenizer_tgt
+    return train_dataloader, val_dataloader, val_loss_dataloader, tokenizer_src, tokenizer_tgt
 
 
 
@@ -200,7 +234,7 @@ def train_model(config):
     Path(config['model_folder']).mkdir(parents=True, exist_ok=True)
 
     # Create the dataset
-    train_dataloader, val_dataloader, tokenizer_src, tokenizer_tgt = get_ds(config, device)
+    train_dataloader, val_dataloader, val_loss_dataloader, tokenizer_src, tokenizer_tgt = get_ds(config, device)
 
     # Create the model
     model = get_model(config, tokenizer_src.get_vocab_size(), tokenizer_tgt.get_vocab_size())
@@ -225,7 +259,15 @@ def train_model(config):
         global_step = state['global_step']
         print(f"Preloaded model from epoch {initial_epoch}")
 
-    loss_fn = nn.CrossEntropyLoss(ignore_index=tokenizer_src.token_to_id('[PAD]'), label_smoothing=0.1).to(device)
+    pad_token = tokenizer_src.token_to_id('[PAD]')
+    loss_fn = nn.CrossEntropyLoss(ignore_index=pad_token, label_smoothing=0.1).to(device)
+    # No label smoothing for validation: smoothing adds a constant floor that
+    # makes the number harder to read, and we only need it to be comparable
+    # across epochs.
+    val_loss_fn = nn.CrossEntropyLoss(ignore_index=pad_token).to(device)
+
+    best_val_loss = float('inf')
+    best_epoch = None
 
     for epoch in range(initial_epoch, config['num_epochs']):
         model.train()
@@ -262,16 +304,34 @@ def train_model(config):
         
         # Run validation at the end of the epoch
         run_validation(model, val_dataloader, tokenizer_src, tokenizer_tgt, config['seq_len'], device, lambda msg: batch_iter.write(msg), global_step, writer)
-            
+
+        # Score the validation set so we can tell overfitting from progress
+        val_loss = compute_validation_loss(model, val_loss_dataloader, val_loss_fn, tokenizer_tgt.get_vocab_size(), device)
+        writer.add_scalar('val_loss', val_loss, global_step)
+        writer.flush()
+
+        is_best = val_loss < best_val_loss
+        if is_best:
+            best_val_loss = val_loss
+            best_epoch = epoch
+        batch_iter.write(f"Epoch {epoch:02d} val_loss: {val_loss:6.3f}" + (" (best so far)" if is_best else f" (best was {best_val_loss:6.3f} at epoch {best_epoch:02d})"))
+
         # Save the model at the end of every epoch
-        model_filename = get_weights_file_path(config, f"{epoch:02d}")
-        torch.save({
+        checkpoint = {
             'epoch': epoch,
             'model_state_dict': model.state_dict(),
             'optimizer_state_dict': optimizer.state_dict(),
-            'global_step': global_step
-        }, model_filename)
-        
+            'global_step': global_step,
+            'val_loss': val_loss
+        }
+        torch.save(checkpoint, get_weights_file_path(config, f"{epoch:02d}"))
+        # Keep a copy of the best epoch so it does not have to be hunted down
+        # afterwards; the final epoch is usually not the best one.
+        if is_best:
+            torch.save(checkpoint, get_weights_file_path(config, 'best'))
+
+    if best_epoch is not None:
+        print(f"\nBest validation loss: {best_val_loss:.3f} at epoch {best_epoch:02d} -> {get_weights_file_path(config, 'best')}")
     writer.close()
 
 if __name__=="__main__":
