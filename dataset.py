@@ -25,14 +25,15 @@ class BilingualDataset(Dataset):
         tgt_text = src_target_pair[self.tgt_lang]
 
         # Transform the text into tokens
-        enc_input_tokens = self.tokenizer_src.encode(src_text).ids
-        dec_input_tokens = self.tokenizer_tgt.encode(tgt_text).ids
+        # Truncate to leave room for the special tokens: SOS + EOS on the encoder
+        # side, and a single SOS/EOS on the decoder side. About 1% of opus_books
+        # pairs are longer than a typical seq_len, and raising here would abort
+        # training partway through the epoch.
+        enc_input_tokens = self.tokenizer_src.encode(src_text).ids[: self.seq_len - 2]
+        dec_input_tokens = self.tokenizer_tgt.encode(tgt_text).ids[: self.seq_len - 1]
 
         enc_num_padded_tokens = self.seq_len - len(enc_input_tokens) - 2
         dec_num_padded_tokens = self.seq_len - len(dec_input_tokens) - 1
-
-        if enc_num_padded_tokens < 0 or dec_num_padded_tokens < 0:
-            raise ValueError("Sequence length is too short")
 
         # Add SOS and EOS tokens with padding to the source text
         encoder_input = torch.cat([

@@ -1,3 +1,9 @@
+import os
+
+# Let unsupported ops fall back to CPU instead of crashing on Apple Metal (MPS).
+# Must be set before torch is imported.
+os.environ.setdefault("PYTORCH_ENABLE_MPS_FALLBACK", "1")
+
 import torch
 import torch.nn as nn
 from torch.utils.data import Dataset, DataLoader, random_split
@@ -21,6 +27,19 @@ from dotenv import load_dotenv
 
 # Load environment variables from .env file
 load_dotenv()
+
+def get_device():
+    """
+    Pick the best available accelerator: CUDA, then Apple Metal (MPS), then CPU.
+    """
+    if torch.cuda.is_available():
+        return torch.device("cuda")
+    if torch.backends.mps.is_available():
+        return torch.device("mps")
+    if torch.backends.mps.is_built():
+        # Built with MPS support but no usable device (needs macOS 12.3+ on Apple silicon)
+        print("MPS is built but not available on this machine, falling back to CPU")
+    return torch.device("cpu")
 
 def greedy_decode(model, source, source_mask, tokenizer_src, tokenizer_tgt, max_len, device):
     sos_idx = tokenizer_tgt.token_to_id("[SOS]")
@@ -113,11 +132,12 @@ def get_or_build_tokenizer(config, ds, lang):
         tolenizer = Tokenizer.from_file(str(tokenizer_path))
     return tolenizer
 
-def get_ds(config):
+def get_ds(config, device):
     """
     Get the dataset.
     """
-    ds_raw = load_dataset("opus_books", f"{config['lang_src']}-{config['lang_tgt']}", split="train")
+    # The bare "opus_books" id no longer resolves; the hub requires namespace/name
+    ds_raw = load_dataset("Helsinki-NLP/opus_books", f"{config['lang_src']}-{config['lang_tgt']}", split="train")
 
     # Build tokenizers
     tokenizer_src = get_or_build_tokenizer(config, ds_raw, config['lang_src'])
@@ -143,8 +163,17 @@ def get_ds(config):
     print(f"Max length of source sentence: {max_len_src}")
     print(f"Max length of target sentence: {max_len_tgt}")
 
-    train_dataloader = DataLoader(train_ds, batch_size=config['batch_size'], shuffle=True)
-    val_dataloader = DataLoader(val_ds, batch_size=1, shuffle=True)
+    # Tokenization happens per item, so worker processes keep the GPU fed.
+    # pin_memory is a CUDA-only optimization and is a no-op cost on MPS.
+    num_workers = config['num_workers']
+    loader_kwargs = {
+        'num_workers': num_workers,
+        'pin_memory': device.type == 'cuda',
+        'persistent_workers': num_workers > 0,
+    }
+
+    train_dataloader = DataLoader(train_ds, batch_size=config['batch_size'], shuffle=True, **loader_kwargs)
+    val_dataloader = DataLoader(val_ds, batch_size=1, shuffle=True, **loader_kwargs)
 
     return train_dataloader, val_dataloader, tokenizer_src, tokenizer_tgt
 
@@ -162,14 +191,16 @@ def train_model(config):
     """
     Train the model.
     """
-    # Create the device, GPU or CPU
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    # Create the device: CUDA, Apple Metal (MPS), or CPU
+    device = get_device()
     print(f"Using device: {device}")
+    if device.type == "mps":
+        print("Apple Metal (MPS) backend enabled")
 
     Path(config['model_folder']).mkdir(parents=True, exist_ok=True)
 
     # Create the dataset
-    train_dataloader, val_dataloader, tokenizer_src, tokenizer_tgt = get_ds(config)
+    train_dataloader, val_dataloader, tokenizer_src, tokenizer_tgt = get_ds(config, device)
 
     # Create the model
     model = get_model(config, tokenizer_src.get_vocab_size(), tokenizer_tgt.get_vocab_size())
@@ -186,7 +217,8 @@ def train_model(config):
     if config['preload']:
         model_filename = get_weights_file_path(config, config['preload'])
         print(f"Preloading model {model_filename}")
-        state = torch.load(model_filename)
+        # map_location keeps checkpoints portable between cpu / mps / cuda
+        state = torch.load(model_filename, map_location=device)
         model.load_state_dict(state['model_state_dict'])
         initial_epoch = state['epoch'] + 1
         optimizer.load_state_dict(state['optimizer_state_dict'])
