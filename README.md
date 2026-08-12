@@ -32,8 +32,9 @@ pip install -r requirements.txt
 
 Edit `config.py` to adjust hyperparameters:
 
-- `batch_size`: Number of samples per batch (default: 4)
+- `batch_size`: Number of samples per batch (default: 32, tuned for GPU)
 - `num_epochs`: Number of training epochs (default: 5)
+- `lr`: Learning rate (default: 3e-4, scaled to match `batch_size`)
 - `seq_len`: Maximum sequence length (default: 128)
 - `d_model`: Model dimension (default: 256)
 - `lang_src`: Source language (default: 'en')
@@ -139,21 +140,40 @@ runs just that op on the CPU rather than crashing.
 
 ### Getting the most out of Apple silicon
 
-The default `batch_size` of 4 leaves most of the GPU idle. Metal throughput
-scales well with batch size — measured on this model (`seq_len=128`,
-`d_model=256`), per training step:
+`config.py` ships tuned for the GPU: `batch_size: 32` and `lr: 3e-4`. A batch
+of 4 leaves most of the GPU idle. Measured end-to-end (real dataloader, Apple
+M5 Pro / 20 GPU cores, `seq_len=128`, `d_model=256`):
 
-| Device | Batch | s/step | samples/s |
-| ------ | ----- | ------ | --------- |
-| CPU    | 4     | 0.141  | 28        |
-| MPS    | 4     | 0.052  | 77        |
-| MPS    | 8     | 0.072  | 111       |
-| MPS    | 16    | 0.116  | 138       |
-| MPS    | 32    | 0.186  | 172       |
+| Batch | samples/s | min/epoch |
+| ----- | --------- | --------- |
+| 4     | 60        | 8.1       |
+| 16    | 118       | 4.1       |
+| 32    | **131**   | **3.7**   |
+| 64    | 132       | 3.7       |
+| 128   | 125       | 3.9       |
 
-Raising `batch_size` to 16–32 in `config.py` is the single biggest win. Note
-that larger batches mean fewer optimizer steps per epoch, so you may want to
-raise `lr` alongside it.
+Throughput plateaus at 32–64 and regresses past it, so 32 is the sweet spot:
+essentially peak speed, while keeping twice as many optimizer steps per epoch
+as 64. Peak memory is ~1.3 GB against ~55 GB available.
+
+Two things that are *not* worth tuning:
+
+- **`num_workers`** — throughput is identical at 0, 2, 4, and 8 workers. The
+  step is GPU-bound, not dataloader-bound.
+- **`batch_size` beyond 128** — at 512 the run collapses to 9 samples/s from
+  memory thrashing.
+
+Because a larger batch means 8x fewer optimizer updates per epoch, `lr` is
+scaled from `1e-4` to `3e-4` to match. There is no warmup schedule in this
+implementation, so raising `lr` much further risks diverging early in training.
+
+### Using the spare capacity
+
+At `d_model: 256` the model is 34.6M parameters and uses ~1.3 GB. There is room
+for a substantially larger model — `d_model: 512` (the value from the original
+paper) is 78.7M parameters at ~1.8 GB, and costs about 1.7x the time per step
+(82 vs 136 samples/s at batch 32). That buys model capacity rather than speed,
+so it is worth it only if you plan to train for enough epochs to use it.
 
 ## Performance Notes
 
