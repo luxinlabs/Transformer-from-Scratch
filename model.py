@@ -106,7 +106,9 @@ class MultiHeadAttentionBlock(nn.Module):
         # (Batch, h, seq_len, d_k)  -->  (Batch, h, seq_len, seq_len)
         attention_scores = (query @ key.transpose(-2, -1)) / math.sqrt(d_k)
         if mask is not None:
-            attention_scores.masked_fill_(mask == 0, -1e9)
+            # Use the dtype's own minimum rather than a hardcoded -1e9, which
+            # overflows to -inf in reduced precision (fp16/bf16) on GPU backends.
+            attention_scores.masked_fill_(mask == 0, torch.finfo(attention_scores.dtype).min)
         attention_scores = attention_scores.softmax(dim=-1) # (Batch, h, seq_len, seq_len)
         if dropout is not None:
             attention_scores = dropout(attention_scores)

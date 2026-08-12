@@ -2,8 +2,10 @@ from pathlib import Path
 
 def get_config():
     return {
+        # On Apple Metal (MPS) a larger batch is much more efficient: throughput
+        # roughly doubles going from 4 to 32. Raise this if you have the memory.
         'batch_size': 4,
-        'num_workers': 2,
+        'num_workers': 2,  # dataloader worker processes; set to 0 to debug
         'num_epochs': 5,
         'lr': 1e-4,
         'seq_len': 128,

@@ -8,6 +8,7 @@ A complete implementation of the Transformer architecture from scratch using PyT
 - Positional encoding and layer normalization
 - Bilingual dataset with proper tokenization and masking
 - Training pipeline with validation and greedy decoding
+- GPU acceleration on NVIDIA (CUDA) and Apple silicon (Metal/MPS)
 - TensorBoard logging for monitoring training progress
 
 ## Requirements
@@ -117,6 +118,43 @@ Create a `.env` file for Hugging Face authentication (optional):
 HF_TOKEN=your_huggingface_token_here
 ```
 
+## Hardware Acceleration
+
+The device is selected automatically at startup, in order of preference:
+
+1. **CUDA** — NVIDIA GPUs
+2. **MPS** — Apple silicon GPU via Metal (M1/M2/M3/M4, macOS 12.3+)
+3. **CPU** — fallback
+
+The selected device is printed when training starts:
+
+```
+Using device: mps
+Apple Metal (MPS) backend enabled
+```
+
+No configuration is needed. If a rarely-used op is missing from the Metal
+backend, `PYTORCH_ENABLE_MPS_FALLBACK=1` (set automatically in `train.py`)
+runs just that op on the CPU rather than crashing.
+
+### Getting the most out of Apple silicon
+
+The default `batch_size` of 4 leaves most of the GPU idle. Metal throughput
+scales well with batch size — measured on this model (`seq_len=128`,
+`d_model=256`), per training step:
+
+| Device | Batch | s/step | samples/s |
+| ------ | ----- | ------ | --------- |
+| CPU    | 4     | 0.141  | 28        |
+| MPS    | 4     | 0.052  | 77        |
+| MPS    | 8     | 0.072  | 111       |
+| MPS    | 16    | 0.116  | 138       |
+| MPS    | 32    | 0.186  | 172       |
+
+Raising `batch_size` to 16–32 in `config.py` is the single biggest win. Note
+that larger batches mean fewer optimizer steps per epoch, so you may want to
+raise `lr` alongside it.
+
 ## Performance Notes
 
 - **CPU Training**: Expect ~2-5 seconds per batch on modern CPUs
@@ -137,6 +175,11 @@ HF_TOKEN=your_huggingface_token_here
 - Reduce `batch_size`
 - Reduce `seq_len`
 - Use gradient accumulation
+
+**Dataloader workers hang or crash on macOS:**
+
+macOS starts worker processes with `spawn`, which re-imports the entry module.
+Set `num_workers` to `0` in `config.py` to rule the workers out when debugging.
 
 **Dataset download issues:**
 
